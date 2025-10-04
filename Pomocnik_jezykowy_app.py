@@ -6,7 +6,7 @@ from openai import OpenAI
 from hashlib import md5
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, Distance, VectorParams
-
+import uuid
 
 env = dotenv_values(".env")
 
@@ -34,12 +34,15 @@ def transcribe_audio(audio_bytes):
     return transcript.text
 
 #
-# DB
+# Sekcja operacji na bazie danych (DB)
 #
 @st.cache_resource
 def get_qdrant_client():
-    return QdrantClient(path=":memory:")
-        
+    return QdrantClient(
+        url=env["QDRANT_URL"],
+        api_key=env["QDRANT_API_KEY"],
+    )
+
 def assure_db_collection_exists():
     qdrant_client = get_qdrant_client()
     if not qdrant_client.collection_exists(QDRANT_COLLECTION_NAME):
@@ -61,20 +64,16 @@ def get_embedding(text):
         model=EMBEDDING_MODEL,
         dimensions=EMBEDDING_DIM,
     )
-
     return result.data[0].embedding
 
 def add_note_to_db(note_text):
-    qdrant_client = get_qdrant_client()
-    points_count = qdrant_client.count(
-        collection_name=QDRANT_COLLECTION_NAME,
-        exact=True,
-    )
+    qdrant_client = get_qdrant_client()    
+    note_id = str(uuid.uuid4())
     qdrant_client.upsert(
         collection_name=QDRANT_COLLECTION_NAME,
         points=[
             PointStruct(
-                id=points_count.count + 1,
+                id=note_id, # Użycie nowego, unikalnego ID
                 vector=get_embedding(text=note_text),
                 payload={
                     "text": note_text,
@@ -83,32 +82,40 @@ def add_note_to_db(note_text):
         ],
     )
 
+def delete_note_from_db(note_id: str):
+    """Usuwa notatkę z bazy Qdrant na podstawie jej unikalnego ID."""
+    qdrant_client = get_qdrant_client()
+    qdrant_client.delete(
+        collection_name=QDRANT_COLLECTION_NAME,
+        points_selector=[note_id],
+    )
+    print(f"Usunięto notatkę o ID: {note_id}")
+
 def list_notes_from_db(query=None):
     qdrant_client = get_qdrant_client()
     if not query:
-        notes = qdrant_client.scroll(collection_name=QDRANT_COLLECTION_NAME, limit=12)[0]
+        notes = qdrant_client.scroll(collection_name=QDRANT_COLLECTION_NAME, limit=15)[0]
         result = []
         for note in notes:
             result.append({
+                "id": note.id,
                 "text": note.payload["text"],
                 "score": None,
             })
-
-        return result
-    
+        return result    
     else:
         notes = qdrant_client.search(
             collection_name=QDRANT_COLLECTION_NAME,
             query_vector=get_embedding(text=query),
-            limit=10,
+            limit=15,
         )
         result = []
         for note in notes:
             result.append({
+                "id": note.id,
                 "text": note.payload["text"],
                 "score": note.score,
             })
-
         return result
 
 #
@@ -125,7 +132,38 @@ if not st.session_state.get("openai_api_key"):
         st.session_state["openai_api_key"] = env["OPENAI_API_KEY"]
 
     else:
-        st.info("Dodaj swój klucz API OpenAI aby móc korzystać z tej aplikacji")
+        st.info("""
+                **Dodaj swój klucz API OpenAI aby móc korzystać z tej aplikacji używającej modeli AI od OpenAI**
+
+Czym jest OpenAI API key i jak z niego bezpiecznie korzystać?
+
+Aby korzystać z tej aplikacji używającej modeli AI z OpenAI, potrzebujesz OpenAI "API key" – **to unikalny klucz, który działa jak hasło do usług OpenAI** (np. ChatGPT, modele generujące mowę itp.).
+
+🔑 Skąd go pobrać?
+
+- Zaloguj się na swoje konto OpenAI: https://platform.openai.com/
+
+- Wejdź w zakładkę API Keys.
+
+- Wygeneruj nowy klucz i skopiuj go.
+
+🛡️ Zasady bezpiecznego korzystania:
+
+- Trzymaj swój klucz w tajemnicy – nie udostępniaj go innym osobom ani publicznie (w tej aplikacji klucz jest używany jedynie podczas Twojej sesji i nie jest nigdzie przechowywany na stałe)            
+
+- Jeśli Twój klucz wycieknie, natychmiast go usuń i wygeneruj nowy.
+👉 Wystarczy jednak, że po skorzystaniu z nowej aplikacji usuniesz konkretny API key, którego użyłeś do testów – wtedy masz pewność, że nikt od tego momentu nie może się nim posługiwać.
+
+- Kontroluj zużycie – regularnie sprawdzaj w panelu OpenAI, jak Twój klucz jest wykorzystywany.
+
+- **Dla zwiększenia swojego poczucia bezpieczeństwa** możesz w ustawieniach konta OpenAI ustawić limity wydatków (np. miesięczne). Na początku warto je ustawić nisko, a po nabraniu doświadczenia w każdej chwili możesz je podnieść zgodnie ze swoimi potrzebami.
+
+- Zasady korzystania z API key u innych dostawców usług AI (np. Google, Microsoft, Anthropic) są bardzo podobne – klucz działa jak hasło do usług i należy go przechowywać w bezpieczny sposób. Możesz więc potraktować tę aplikację jako bezpieczne środowisko testowe do nauki korzystania z tego rodzaju funkcjonalności.
+                
+
+
+
+                """)
         st.session_state["openai_api_key"] = st.text_input("Klucz API", type="password")
         if st.session_state["openai_api_key"]:
             st.rerun()
@@ -218,16 +256,18 @@ with st.sidebar.expander("Zastosowane technologie i modele AI"):
         ''')
 with st.sidebar.expander("Przydatne podpowiedzi dla początkujących użytkowników"):
         st.markdown('''
+                    - Ta wersja aplikacji służy jedynie **do testowania**. Warto przetwarzać w niej tylko teksty przeznaczone do publicznej wiadomości. Nie zalecam, a wręcz **odradzam korzystanie z tej wersji aplikacji do przetwarzania osobistych, prywatnych lub służbowych treści**, ponieważ po pierwsze, są one przetwarzane przez AI (co wymaga dbałości o bezpieczeństwo cyfrowe), a po drugie, po zapisaniu notatek inni użytkownicy również mogą je widzieć aż do momentu ich usunięcia (można samodzielnie usunąć notatkę z bazy danych za pomocą przycisku **"Usuń notatkę"**). Notatki będą systematycznie usuwane z pamięci, ale nie należy ryzykować potencjalnego wycieku poufnych danych, gdyż wystarczy chwila publicznej ekspozycji. Zasady bezpieczeństwa cyfrowego są oczywiście ogólnie znane każdemu użytkownikowi internetu, ale tego typu ostrzeżeń nigdy za wiele.
                     - Wszystkie edytowalne pola tekstowe można rozszerzać, przeciągając ich dolny prawy róg - w ten sposób można wygodniej edytować i porównywać dłuższe teksty
                     - Pole paska bocznego można poszerzać lub zmniejszać, przeciągając jego prawą krawędź - w ten sposób można wygodniej wybierać opcje i czytać informacje
                     - Pole paska bocznego można też schować lub pokazywać, klikając ikonę strzałki w lewym górnym rogu aplikacji - w ten sposób można zwiększyć przestrzeń roboczą głównego obszaru aplikacji
                     - Po transkrypcji audio na tekst, tekst można dalej edytować ręcznie, a następnie zapisać jego aktualną formę
+                    - Zwróć uwagę na podpowiedzi w polach tekstowych po dokonaniu edycji tekstu ("press Enter to apply"; "press Ctrl+Enter to apply") aby zachować zmiany w tym polu tekstowym do dalszych akcji
                     ''')
 
 with st.sidebar.expander("Ograniczenia aplikacji"):
         st.markdown('''
-                    - Obecna forma aplikacji pomaga zademonstrować potencjał współpracy z AI oraz umożliwia prace ad hoc, ale nie służy do stałego przechowywania danych. Mimo to, aplikacja na tym etapie pozwala na pobieranie wygenerowanych plików audio oraz kopiowanie tekstów do plików tekstowych, takich jak txt czy docx. - warto ją traktować jako bazę wyjściową do konfiguracji rozwiązań uszytych na miarę potrzeb użytkownika
-                    - Notatki są przechowywane tylko w pamięci (RAM) i znikają po zamknięciu aplikacji - (istnieje możliwość uzupełnienia tej funkcjonalności, ale to się oczywiście wiąże z kosztami przechowywania danych oraz skonfigurowaniem bazy danych na stałe wraz z jej zabezpieczeniem przed dostępem osób trzecich)
+                    - **Obecna forma aplikacji pomaga zademonstrować potencjał współpracy z AI** oraz umożliwia prace ad hoc, ale nie służy do stałego przechowywania danych. Mimo to, aplikacja na tym etapie pozwala na pobieranie wygenerowanych plików audio oraz kopiowanie tekstów do plików tekstowych, takich jak txt czy docx. - **warto ją traktować jako bazę wyjściową do konfiguracji rozwiązań uszytych na miarę potrzeb użytkownika**
+                    - **Zapisane** notatki są widoczne dla innych użytkowników, więc rekomenduję przetwarzanie tylko **publicznych** treści. Notatki należy **ręcznie usuwać** z bazy danych po zakończeniu pracy z nimi. Notatki będą systematycznie usuwane z pamięci, ale nie należy ryzykować potencjalnego wycieku poufnych danych, gdyż wystarczy chwila publicznej ekspozycji
                     - Brak możliwości zapisywania notatek do pliku np. .txt (istnieje możliwość uzupełnienia tej funkcjonalności)
                     - Brak możliwości edytowania notatek po ich zapisaniu, ale można je wyszukiwać i ponownie przetwarzać, a następnie zapisać jej nową formę jako kolejną notatkę
                     - Aplikacja jest skierowana do polskiego użytkownika, ale AI myśli w uniwersalnym języku, więc można z nią już teraz rozmawiać/pracować w różnych językach. W przyszłości jej interfejs można łatwo przetłumaczyć na inny język - ba, sama umie to zrobić (przetłumaczyć dobrze tekst).
@@ -285,7 +325,7 @@ if st.session_state.chat_active:
                         {"role": "system", "content": "Jesteś pomocnym asystentem, który wykrywa język przetwarzanego tekstu, a następnie koncentruje się jedynie na poprawie ewentualnych błędów w tym tekście, w tym samym języku: np. jeśli wykryjesz tekst napisany po polsku, popraw zgodnie z zasadami języka polskiego; jeśli wykryjesz tekst napisany po angielsku, popraw zgodnie z zasadami języka angielskiego. Poprawiaj tekst pod względem gramatycznym, stylistycznym, składniowym i ortograficznym. Popraw tylko błędy, nie zmieniaj sensu wypowiedzi."},
                         {"role": "user", "content": st.session_state["note_text"]},
                     ],
-                    max_tokens=1024,
+                    max_tokens=5000,
                 )
                 st.session_state["note_text_corrected"] = response.choices[0].message.content
 
@@ -355,7 +395,7 @@ if st.session_state.chat_active:
                                 {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na brytyjski angielski, zachowując sens i styl oryginału."},
                                 {"role": "user", "content": text_to_translate},
                             ],
-                            max_tokens=1024,
+                            max_tokens=5000,
                         )
                         st.session_state["translated_text_br"] = response.choices[0].message.content
 
@@ -421,7 +461,7 @@ if st.session_state.chat_active:
                                 {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na amerykański angielski, zachowując sens i styl oryginału."},
                                 {"role": "user", "content": text_to_translate},
                             ],
-                            max_tokens=1024,
+                            max_tokens=5000,
                         )
                         st.session_state["translated_text_us"] = response.choices[0].message.content
 
@@ -483,7 +523,7 @@ if st.session_state.chat_active:
                                 {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na język polski, zachowując sens i styl oryginału."},
                                 {"role": "user", "content": text_to_translate},
                             ],
-                            max_tokens=1024,
+                            max_tokens=5000,
                         )
                         st.session_state["translated_text_pl"] = response.choices[0].message.content
 
@@ -578,7 +618,7 @@ if st.session_state.chat_active:
                                 {"role": "system", "content": f"Jesteś tłumaczem. Przetłumacz poniższy tekst na {selected_lang_prompt}, zachowując sens i styl oryginału."},
                                 {"role": "user", "content": text_to_translate},
                             ],
-                            max_tokens=1024,
+                            max_tokens=5000,
                         )
                         st.session_state["translated_text_any"] = response.choices[0].message.content
                         st.session_state["translated_lang_code"] = selected_lang_code
@@ -618,51 +658,76 @@ if st.session_state.chat_active:
                     st.info("Brak notatek do tłumaczenia. Dodaj lub popraw notatkę w zakładce 'Dodaj notatkę'.")
                 
         with search_tab:
-
-            query = st.text_input("Wyszukaj notatkę")
-            notes = []
-            if st.button("Szukaj"):
-                notes = list_notes_from_db(query)
-                st.session_state["search_results"] = notes  # zapisz wyniki do session_state
-            elif "search_results" in st.session_state:
-                notes = st.session_state["search_results"]
-
-            selected_note_idx = None
+            
+            query = st.text_input("Wyszukaj notatkę", key="search_query")
+            
+            # Utrzymanie wyników wyszukiwania w session_state
+            if st.button("Szukaj", key="search_btn"):
+                st.session_state["search_results"] = list_notes_from_db(query)
+            
+            notes = st.session_state.get("search_results", [])
+            
             if notes:
                 st.subheader("Wyniki wyszukiwania:")
+
+                # Przygotowanie etykiet do wyboru notatki do dalszych akcji (edycja/tłumaczenie)
                 note_labels = []
-                for idx, note in enumerate(notes):
+                for note in notes:
                     # Wyświetl pełną notatkę i pełny score
                     with st.container(border=True):
                         st.markdown(note["text"])
                         if note["score"] is not None:
                             st.markdown(f':violet[score: {note["score"]}]')
-                    # Przygotuj skrócony opis do wyboru
                     text_short = note["text"][:60].replace("\n", " ") + ("..." if len(note["text"]) > 60 else "")
                     score = f" (score: {note['score']})" if note["score"] is not None else ""
                     note_labels.append(text_short + score)
 
-                # Pozwól użytkownikowi wybrać notatkę do dalszych akcji
+                # Wybór notatki do edycji/tłumaczenia
                 selected_note_idx = st.radio(
-                    "Wybierz notatkę do dalszych akcji:",
-                    options=list(range(len(notes))),
+                    "**Wybierz notatkę do dalszych akcji** znajdujących się na dole (edycja, tłumaczenie itp.):",
+                    options=range(len(notes)),
                     format_func=lambda i: note_labels[i],
                     key="search_selected_note_idx"
                 )
 
-            # Jeśli wybrano notatkę, pokaż edycję i akcje jak w add_tab
-            if selected_note_idx is not None:
-                # --- Edycja wybranej notatki ---
-                if "search_note_text" not in st.session_state or st.session_state.get("last_selected_note_idx") != selected_note_idx:
-                    st.session_state["search_note_text"] = notes[selected_note_idx]["text"]
-                    st.session_state["search_note_text_corrected"] = ""
-                    st.session_state["last_selected_note_idx"] = selected_note_idx
+                st.markdown("---")
+                st.subheader("Znalezione notatki z opcją usunięcia z bazy danych:")
+                # Wyświetlanie każdej notatki z przyciskiem do usunięcia
+                for idx, note in enumerate(notes):
+                    with st.container(border=True):
+                        col1, col2 = st.columns([7, 1])
+                        with col1:
+                            st.markdown(note["text"])
+                            if note["score"] is not None:
+                                st.markdown(f':violet[score: {note["score"]}]')
+                        with col2:
+                            # Przycisk usuwania dla każdej notatki
+                            if st.button("🗑️ Usuń notatkę", key=f"delete_{note['id']}"):
+                                delete_note_from_db(note['id'])
+                                st.toast(f"Notatka została usunięta!", icon="🗑️")
+                                # Wyczyszczenie wyników, aby odświeżyć listę
+                                if "search_results" in st.session_state:
+                                    del st.session_state["search_results"]
+                                # Przerwanie i ponowne uruchomienie skryptu, aby zobaczyć zmiany
+                                st.rerun()
+                
+                st.markdown("---")
 
-                st.session_state["search_note_text"] = st.text_area(
-                    "**Pierwsza wersja wyszukanej notatki:** Edytuj notatkę (możesz modyfikować przed dalszymi akcjami):",
-                    value=st.session_state["search_note_text"],
-                    key="search_note_text_area"
-                )
+                # Dalsze akcje na wybranej notatce (z `st.radio`)
+                if selected_note_idx is not None and len(notes) > selected_note_idx:
+                    selected_note_data = notes[selected_note_idx]
+                    
+                    if st.session_state.get("last_selected_note_id") != selected_note_data["id"]:
+                        st.session_state["search_note_text"] = selected_note_data["text"]
+                        st.session_state["search_note_text_corrected"] = ""
+                        st.session_state["last_selected_note_id"] = selected_note_data["id"]
+
+                    st.subheader("Akcje dla wybranej notatki:")
+                    st.session_state["search_note_text"] = st.text_area(
+                        "**Pierwsza wersja wyszukanej notatki:** Edytuj notatkę:",
+                        value=st.session_state.get("search_note_text", ""),
+                        key="search_note_text_area"
+                    )
 
                 # --- Poprawa przez GPT-4o ---
                 if st.button("Popraw notatkę przez ChatGPT-4o", key="search_correct_btn"):
@@ -673,7 +738,7 @@ if st.session_state.chat_active:
                             {"role": "system", "content": "Jesteś pomocnym asystentem, który wykrywa język przetwarzanego tekstu, a następnie koncentruje się jedynie na poprawie ewentualnych błędów w tym tekście, w tym samym języku: np. jeśli wykryjesz tekst napisany po polsku, popraw zgodnie z zasadami języka polskiego; jeśli wykryjesz tekst napisany po angielsku, popraw zgodnie z zasadami języka angielskiego. Poprawiaj tekst pod względem gramatycznym, stylistycznym, składniowym i ortograficznym. Popraw tylko błędy, nie zmieniaj sensu wypowiedzi."},
                             {"role": "user", "content": st.session_state["search_note_text"]},
                         ],
-                        max_tokens=1024,
+                        max_tokens=5000,
                     )
                     st.session_state["search_note_text_corrected"] = response.choices[0].message.content
 
@@ -731,7 +796,7 @@ if st.session_state.chat_active:
                                     {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na brytyjski angielski, zachowując sens i styl oryginału."},
                                     {"role": "user", "content": text_to_translate},
                                 ],
-                                max_tokens=1024,
+                                max_tokens=5000,
                             )
                             st.session_state["search_translated_text_br"] = response.choices[0].message.content
 
@@ -797,7 +862,7 @@ if st.session_state.chat_active:
                                     {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na amerykański angielski, zachowując sens i styl oryginału."},
                                     {"role": "user", "content": text_to_translate},
                                 ],
-                                max_tokens=1024,
+                                max_tokens=5000,
                             )
                             st.session_state["search_translated_text_us"] = response.choices[0].message.content
 
@@ -859,7 +924,7 @@ if st.session_state.chat_active:
                                     {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na język polski, zachowując sens i styl oryginału."},
                                     {"role": "user", "content": text_to_translate},
                                 ],
-                                max_tokens=1024,
+                                max_tokens=5000,
                             )
                             st.session_state["search_translated_text_pl"] = response.choices[0].message.content
 
@@ -946,7 +1011,7 @@ if st.session_state.chat_active:
                                     {"role": "system", "content": f"Jesteś tłumaczem. Przetłumacz poniższy tekst na {selected_lang_prompt}, zachowując sens i styl oryginału."},
                                     {"role": "user", "content": text_to_translate},
                                 ],
-                                max_tokens=1024,
+                                max_tokens=5000,
                             )
                             st.session_state["search_translated_text_any"] = response.choices[0].message.content
                             st.session_state["search_translated_lang_code"] = selected_lang_code
@@ -1044,7 +1109,7 @@ if st.session_state.chat_active:
                 response = openai_client.chat.completions.create(
                     model="gpt-4o",
                     messages=st.session_state.chat_history,
-                    max_tokens=1024
+                    max_tokens=5000,
                 )
                 answer = response.choices[0].message.content
                 st.session_state.chat_history.append({"role": "assistant", "content": answer})
@@ -1112,7 +1177,7 @@ else:
                         {"role": "system", "content": "Jesteś pomocnym asystentem, który wykrywa język przetwarzanego tekstu, a następnie koncentruje się jedynie na poprawie ewentualnych błędów w tym tekście, w tym samym języku: np. jeśli wykryjesz tekst napisany po polsku, popraw zgodnie z zasadami języka polskiego; jeśli wykryjesz tekst napisany po angielsku, popraw zgodnie z zasadami języka angielskiego. Poprawiaj tekst pod względem gramatycznym, stylistycznym, składniowym i ortograficznym. Popraw tylko błędy, nie zmieniaj sensu wypowiedzi."},
                         {"role": "user", "content": st.session_state["note_text"]},
                     ],
-                    max_tokens=1024,
+                    max_tokens=5000,
                 )
                 st.session_state["note_text_corrected"] = response.choices[0].message.content
 
@@ -1181,7 +1246,7 @@ else:
                                 {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na brytyjski angielski, zachowując sens i styl oryginału."},
                                 {"role": "user", "content": text_to_translate},
                             ],
-                            max_tokens=1024,
+                            max_tokens=5000,
                         )
                         st.session_state["translated_text_br"] = response.choices[0].message.content
 
@@ -1247,7 +1312,7 @@ else:
                                 {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na amerykański angielski, zachowując sens i styl oryginału."},
                                 {"role": "user", "content": text_to_translate},
                             ],
-                            max_tokens=1024,
+                            max_tokens=5000,
                         )
                         st.session_state["translated_text_us"] = response.choices[0].message.content
 
@@ -1309,7 +1374,7 @@ else:
                                 {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na język polski, zachowując sens i styl oryginału."},
                                 {"role": "user", "content": text_to_translate},
                             ],
-                            max_tokens=1024,
+                            max_tokens=5000,
                         )
                         st.session_state["translated_text_pl"] = response.choices[0].message.content
 
@@ -1405,7 +1470,7 @@ else:
                                 {"role": "system", "content": f"Jesteś tłumaczem. Przetłumacz poniższy tekst na {selected_lang_prompt}, zachowując sens i styl oryginału."},
                                 {"role": "user", "content": text_to_translate},
                             ],
-                            max_tokens=1024,
+                            max_tokens=5000,
                         )
                         st.session_state["translated_text_any"] = response.choices[0].message.content
                         st.session_state["translated_lang_code"] = selected_lang_code
@@ -1446,53 +1511,69 @@ else:
                 
         with search_tab:
 
-            query = st.text_input("Wyszukaj notatkę")
-            notes = []
-            if st.button("Szukaj"):
-                notes = list_notes_from_db(query)
-                st.session_state["search_results"] = notes  # zapisz wyniki do session_state
-            elif "search_results" in st.session_state:
-                notes = st.session_state["search_results"]
-
-            selected_note_idx = None
+            query = st.text_input("Wyszukaj notatkę", key="search_query_no_chat")
+            
+            if st.button("Szukaj", key="search_btn_no_chat"):
+                st.session_state["search_results"] = list_notes_from_db(query)
+        
+            notes = st.session_state.get("search_results", [])
+            
             if notes:
                 st.subheader("Wyniki wyszukiwania:")
+            
                 note_labels = []
-                for idx, note in enumerate(notes):
-                    # Wyświetl pełną notatkę i pełny score
+                for note in notes:
                     with st.container(border=True):
                         st.markdown(note["text"])
                         if note["score"] is not None:
                             st.markdown(f':violet[score: {note["score"]}]')
-                    # Przygotuj skrócony opis do wyboru
                     text_short = note["text"][:60].replace("\n", " ") + ("..." if len(note["text"]) > 60 else "")
                     score = f" (score: {note['score']})" if note["score"] is not None else ""
                     note_labels.append(text_short + score)
 
-                # Pozwól użytkownikowi wybrać notatkę do dalszych akcji
                 selected_note_idx = st.radio(
-                    "Wybierz notatkę do dalszych akcji:",
-                    options=list(range(len(notes))),
+                    "**Wybierz notatkę do dalszych akcji** znajdujących się na dole (edycja, tłumaczenie itp.):",
+                    options=range(len(notes)),
                     format_func=lambda i: note_labels[i],
-                    key="search_selected_note_idx"
-                )
+                    key="search_selected_note_idx_no_chat"
+                )                
 
-            # Jeśli wybrano notatkę, pokaż edycję i akcje jak w add_tab
-            if selected_note_idx is not None:
-                # --- Edycja wybranej notatki ---
-                if "search_note_text" not in st.session_state or st.session_state.get("last_selected_note_idx") != selected_note_idx:
-                    st.session_state["search_note_text"] = notes[selected_note_idx]["text"]
-                    st.session_state["search_note_text_corrected"] = ""
-                    st.session_state["last_selected_note_idx"] = selected_note_idx
+                st.markdown("---")
+                st.subheader("Znalezione notatki z opcją usunięcia z bazy danych:")
+                for idx, note in enumerate(notes):
+                    with st.container(border=True):
+                        col1, col2 = st.columns([8, 1])
+                        with col1:
+                            st.markdown(note["text"])
+                            if note["score"] is not None:
+                                st.markdown(f':violet[score: {note["score"]}]')
+                        with col2:
+                            if st.button("🗑️ Usuń notatkę", key=f"delete_{note['id']}_no_chat"):
+                                delete_note_from_db(note['id'])
+                                st.toast(f"Notatka została usunięta!", icon="🗑️")
+                                if "search_results" in st.session_state:
+                                    del st.session_state["search_results"]
+                                st.rerun()
+                
+                st.markdown("---")
 
-                st.session_state["search_note_text"] = st.text_area(
-                    "**Pierwsza wersja wyszukanej notatki:** Edytuj notatkę (możesz modyfikować przed dalszymi akcjami):",
-                    value=st.session_state["search_note_text"],
-                    key="search_note_text_area"
-                )
+                if selected_note_idx is not None and len(notes) > selected_note_idx:
+                    selected_note_data = notes[selected_note_idx]
+                    
+                    if st.session_state.get("last_selected_note_id") != selected_note_data["id"]:
+                        st.session_state["search_note_text"] = selected_note_data["text"]
+                        st.session_state["search_note_text_corrected"] = ""
+                        st.session_state["last_selected_note_id"] = selected_note_data["id"]
+
+                    st.subheader("Akcje dla wybranej notatki:")
+                    st.session_state["search_note_text"] = st.text_area(
+                        "**Pierwsza wersja wyszukanej notatki:** Edytuj notatkę:",
+                        value=st.session_state.get("search_note_text", ""),
+                        key="search_note_text_area_no_chat"
+                    )
 
                 # --- Poprawa przez GPT-4o ---
-                if st.button("Popraw notatkę przez ChatGPT-4o", key="search_correct_btn"):
+                if st.button("Popraw notatkę przez ChatGPT-4o", key="search_correct_btn_no_chat"):
                     openai_client = get_openai_client()
                     response = openai_client.chat.completions.create(
                         model="gpt-4o",
@@ -1500,7 +1581,7 @@ else:
                             {"role": "system", "content": "Jesteś pomocnym asystentem, który wykrywa język przetwarzanego tekstu, a następnie koncentruje się jedynie na poprawie ewentualnych błędów w tym tekście, w tym samym języku: np. jeśli wykryjesz tekst napisany po polsku, popraw zgodnie z zasadami języka polskiego; jeśli wykryjesz tekst napisany po angielsku, popraw zgodnie z zasadami języka angielskiego. Poprawiaj tekst pod względem gramatycznym, stylistycznym, składniowym i ortograficznym. Popraw tylko błędy, nie zmieniaj sensu wypowiedzi."},
                             {"role": "user", "content": st.session_state["search_note_text"]},
                         ],
-                        max_tokens=1024,
+                        max_tokens=5000,
                     )
                     st.session_state["search_note_text_corrected"] = response.choices[0].message.content
 
@@ -1558,7 +1639,7 @@ else:
                                     {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na brytyjski angielski, zachowując sens i styl oryginału."},
                                     {"role": "user", "content": text_to_translate},
                                 ],
-                                max_tokens=1024,
+                                max_tokens=5000,
                             )
                             st.session_state["search_translated_text_br"] = response.choices[0].message.content
 
@@ -1624,7 +1705,7 @@ else:
                                     {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na amerykański angielski, zachowując sens i styl oryginału."},
                                     {"role": "user", "content": text_to_translate},
                                 ],
-                                max_tokens=1024,
+                                max_tokens=5000,
                             )
                             st.session_state["search_translated_text_us"] = response.choices[0].message.content
 
@@ -1686,7 +1767,7 @@ else:
                                     {"role": "system", "content": "Jesteś tłumaczem. Przetłumacz poniższy tekst na język polski, zachowując sens i styl oryginału."},
                                     {"role": "user", "content": text_to_translate},
                                 ],
-                                max_tokens=1024,
+                                max_tokens=5000,
                             )
                             st.session_state["search_translated_text_pl"] = response.choices[0].message.content
 
@@ -1773,7 +1854,7 @@ else:
                                     {"role": "system", "content": f"Jesteś tłumaczem. Przetłumacz poniższy tekst na {selected_lang_prompt}, zachowując sens i styl oryginału."},
                                     {"role": "user", "content": text_to_translate},
                                 ],
-                                max_tokens=1024,
+                                max_tokens=5000,
                             )
                             st.session_state["search_translated_text_any"] = response.choices[0].message.content
                             st.session_state["search_translated_lang_code"] = selected_lang_code
