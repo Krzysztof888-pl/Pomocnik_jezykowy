@@ -312,8 +312,7 @@ if st.session_state.chat_active:
                     transcribed = transcribe_audio(st.session_state["note_audio_bytes"])
                     # Ustaw transkrypcję jako tekst do edycji
                     st.session_state["note_text"] = transcribed
-                    st.rerun()
-
+                    
             # --- Pole do edycji notatki (zawsze widoczne) ---
             st.session_state["note_text"] = st.text_area(
                 "**Pierwsza wersja notatki:** Edytuj notatkę (możesz wpisać, wkleić lub użyć transkrypcji audio, a następnie dalej edytować):",
@@ -1165,8 +1164,7 @@ else:
                     transcribed = transcribe_audio(st.session_state["note_audio_bytes"])
                     # Ustaw transkrypcję jako tekst do edycji
                     st.session_state["note_text"] = transcribed
-                    st.rerun()
-
+                    
             # --- Pole do edycji notatki (zawsze widoczne) ---
             st.session_state["note_text"] = st.text_area(
                 "**Pierwsza wersja notatki:** Edytuj notatkę (możesz wpisać, wkleić lub użyć transkrypcji audio, a następnie dalej edytować):",
