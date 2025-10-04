@@ -1,5 +1,5 @@
 # O aplikacji
-Aplikacja "Pomocnik Językowy" to zaawansowane narzędzie do wsparcia pracy nad tekstem, które łączy różne technologie sztucznej inteligencji, aby zwiększyć produktywność i kreatywność użytkowników. Nasza aplikacja umożliwia szybkie przetwarzanie i poprawę tekstów za pomoc modelu GPT-4o oraz szereg innych funkcji, które sprawiają, że praca z tekstemi jest bardziej efektywna i wszechstronna.
+Aplikacja "Pomocnik Językowy" to zaawansowane narzędzie do wsparcia pracy nad tekstem, które łączy różne technologie sztucznej inteligencji, aby zwiększyć produktywność i kreatywność użytkowników. Udostępniona aplikacja umożliwia szybkie przetwarzanie i poprawę tekstów za pomocą modelu GPT-4o oraz szereg innych funkcji, które sprawiają, że praca z tekstami jest zdecydowanie szybsza, bardziej efektywna i wszechstronna.
 
 # Funkcjonalności
 - Nagrywanie notatek audio: Możliwość nagrywania i zapisywania notatek w formie audio z zastosowaniem technologii OpenAI "whisper-1" do ich transkrypcji na tekst.
@@ -22,4 +22,5 @@ Aplikacja "Pomocnik Językowy" to zaawansowane narzędzie do wsparcia pracy nad 
 - OpenAI "text-embedding-3-large": Tworzenie osadzeń tekstu w bazie danych.
 - OpenAI "tts-1": Syntezator mowy do generowania wersji audio tekstu.
 - Qdrant: Baza danych wektorowych do semantycznego przechowywania i przeszukiwania notatek.
+- Python - użyty język programowania.
 - Streamlit: Framework do budowy interfejsu użytkownika.
